@@ -1,0 +1,29 @@
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+
+[project]
+name = "pdf-form-filler-mcp"
+version = "0.1.0"
+description = "MCP server for filling PDF forms (AcroForm and XFA)"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "pymupdf>=1.24.0",
+    "pypdf>=3.0.0",
+]
+
+[project.scripts]
+pdf-form-filler-mcp = "pdf_form_filler_mcp.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "requests>=2.28.0",
+]
+
+[tool.uv]
+find-links = ["/usr/ports/print/py-PyMuPDF/work-py311/pymupdf-1.27.2.2/dist"]
+
+[tool.uv.sources]
+pymupdf = { path = "/usr/ports/print/py-PyMuPDF/work-py311/pymupdf-1.27.2.2/dist/pymupdf-1.27.2.2-cp311-abi3-freebsd_15_0_stable_amd64.whl" }
