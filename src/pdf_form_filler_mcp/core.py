@@ -189,12 +189,34 @@ def _xfa_collect_values(datasets_root: ET.Element) -> dict[str, str]:
     return values
 
 
+def _xfa_find_element(node: ET.Element, local_name: str) -> ET.Element | None:
+    """Recursively find the first element whose local tag name matches local_name."""
+    tag = node.tag.split("}")[-1] if "}" in node.tag else node.tag
+    if tag == local_name:
+        return node
+    for child in node:
+        result = _xfa_find_element(child, local_name)
+        if result is not None:
+            return result
+    return None
+
+
 def _xfa_set_field(
     datasets_root: ET.Element,
     field_name: str,
     value: str,
     ancestor_path: list[str],
 ) -> None:
+    # The datasets XML may have the element at a different nesting level than
+    # the template subform path suggests (e.g. directly under topmostSubform
+    # instead of topmostSubform/Page1).  Always search first; only create via
+    # ancestor_path when the element is absent.
+    field_el = _xfa_find_element(datasets_root, field_name)
+    if field_el is not None:
+        field_el.text = value
+        return
+
+    # Element absent — create it following the template's ancestor path.
     data_el = datasets_root.find(f"{{{_XFA_DNS}}}data")
     if data_el is None:
         data_el = ET.SubElement(datasets_root, f"{{{_XFA_DNS}}}data")
@@ -206,10 +228,8 @@ def _xfa_set_field(
             child = ET.SubElement(current, segment)
         current = child
 
-    field_el = current.find(field_name)
-    if field_el is None:
-        field_el = ET.SubElement(current, field_name)
-    field_el.text = value
+    new_el = ET.SubElement(current, field_name)
+    new_el.text = value
 
 
 def _serialize_datasets(root: ET.Element) -> bytes:
