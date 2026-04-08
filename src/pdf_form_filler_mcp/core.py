@@ -232,6 +232,64 @@ def _xfa_set_field(
     new_el.text = value
 
 
+def _decode_pdf_string(raw: str) -> str:
+    """Decode a PDF string literal: either <hexhex> (UTF-16BE) or (text)."""
+    raw = raw.strip()
+    if raw.startswith("<") and raw.endswith(">"):
+        hex_data = raw[1:-1].replace(" ", "")
+        raw_bytes = bytes.fromhex(hex_data)
+        if raw_bytes[:2] == b"\xfe\xff":
+            return raw_bytes[2:].decode("utf-16-be")
+        return raw_bytes.decode("latin-1")
+    if raw.startswith("(") and raw.endswith(")"):
+        return raw[1:-1]
+    return raw
+
+
+def _set_xfa_widget_values(doc: pymupdf.Document, filled_values: dict[str, str]) -> None:
+    """Set /V on AcroForm widget annotations so non-XFA viewers display filled values.
+
+    Also sets NeedAppearances=true so viewers regenerate appearance streams from /V.
+    """
+    cat = doc.pdf_catalog()
+    acroform_ref = doc.xref_get_key(cat, "AcroForm")
+    if acroform_ref[0] == "null":
+        return
+    acroform_xref = int(acroform_ref[1].split()[0])
+    doc.xref_set_key(acroform_xref, "NeedAppearances", "true")
+
+    seen: set[int] = set()
+    for page_num in range(doc.page_count):
+        page = doc[page_num]
+        annots_ref = doc.xref_get_key(page.xref, "Annots")
+        if annots_ref[0] == "null":
+            continue
+        if annots_ref[0] == "array":
+            raw_arr = annots_ref[1]
+        elif annots_ref[0] == "xref":
+            arr_xref = int(annots_ref[1].split()[0])
+            raw_arr = doc.xref_object(arr_xref)
+        else:
+            continue
+
+        for axref in (int(x) for x in re.findall(r"(\d+) 0 R", raw_arr)):
+            if axref in seen:
+                continue
+            seen.add(axref)
+            raw_obj = doc.xref_object(axref)
+            if "/Widget" not in raw_obj:
+                continue
+            t_match = re.search(r"/T\s*(<[^>]+>|\([^)]*\))", raw_obj)
+            if not t_match:
+                continue
+            short_name = re.sub(r"\[\d+\]$", "", _decode_pdf_string(t_match.group(1)))
+            if short_name not in filled_values:
+                continue
+            value = filled_values[short_name]
+            escaped = value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+            doc.xref_set_key(axref, "V", f"({escaped})")
+
+
 def _serialize_datasets(root: ET.Element) -> bytes:
     ET.register_namespace("xfa", _XFA_DNS)
     body = ET.tostring(root, encoding="unicode")
@@ -351,6 +409,7 @@ def save_pdf(handle: str, output_path: str) -> str:
     out = str(Path(output_path).resolve())
 
     if state["form_type"] == "XFA":
+        _set_xfa_widget_values(state["doc"], state["filled_values"])
         state["doc"].save(out)
     else:
         with open(out, "wb") as fh:
