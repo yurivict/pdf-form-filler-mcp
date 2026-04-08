@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -31,6 +32,6 @@ def xfa_pdf_path(tmp_path_factory):
 def mcp_server_cmd():
     """Command to launch the MCP server (in PATH)."""
     # find it in path
-    exe = Path("pdf-form-filler-mcp")
+    exe = Path(shutil.which("pdf-form-filler-mcp"))
     assert exe.exists(), f"MCP server executable not found: {exe}"
     return [str(exe)]
