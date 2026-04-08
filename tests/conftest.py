@@ -29,7 +29,8 @@ def xfa_pdf_path(tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def mcp_server_cmd():
-    """Command to launch the MCP server from the project venv."""
-    exe = Path(__file__).parent.parent / ".venv" / "bin" / "pdf-form-filler-mcp"
+    """Command to launch the MCP server (in PATH)."""
+    # find it in path
+    exe = Path("pdf-form-filler-mcp")
     assert exe.exists(), f"MCP server executable not found: {exe}"
     return [str(exe)]
