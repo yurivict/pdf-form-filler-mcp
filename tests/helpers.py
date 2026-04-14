@@ -64,14 +64,30 @@ def download(url: str, dest: str, max_retries: int = 3) -> None:
 # Post-save verification helpers
 # ---------------------------------------------------------------------------
 
+def _field_value_normalized(field: pypdf.generic.Field) -> str:
+    """Normalize pypdf field value to string.
+
+    Checkbox/radiobutton fields are returned as 'True'/'False'.
+    """
+    ft = str(field.field_type or "")
+    v = field.value
+    if ft == "/Btn":
+        if v is None:
+            return "False"
+        sv = str(v).lstrip("/")
+        return "False" if sv.lower() in ("off", "false", "0", "") else "True"
+    return str(v) if v is not None else ""
+
+
 def verify_acroform_saved(saved_path: str, expected: dict[str, str]) -> None:
-    """Re-open saved AcroForm PDF with pypdf and verify expected field values."""
+    """Re-open saved AcroForm PDF with pypdf and verify expected field values.
+
+    Checkbox/radiobutton values are normalized to 'True'/'False' strings so
+    they can be compared directly to the values passed to fill_field.
+    """
     reader = pypdf.PdfReader(saved_path)
     raw = reader.get_fields() or {}
-    saved: dict[str, str] = {}
-    for name, field in raw.items():
-        v = field.value
-        saved[name] = str(v) if v is not None else ""
+    saved: dict[str, str] = {name: _field_value_normalized(field) for name, field in raw.items()}
 
     for name, value in expected.items():
         assert saved.get(name) == value, (
@@ -79,8 +95,26 @@ def verify_acroform_saved(saved_path: str, expected: dict[str, str]) -> None:
         )
 
 
+def _decode_pdf_string(raw: str) -> str:
+    """Decode a PDF string literal: either <hexhex> (UTF-16BE) or (text)."""
+    raw = raw.strip()
+    if raw.startswith("<") and raw.endswith(">"):
+        hex_data = raw[1:-1].replace(" ", "")
+        raw_bytes = bytes.fromhex(hex_data)
+        if raw_bytes[:2] == b"\xfe\xff":
+            return raw_bytes[2:].decode("utf-16-be")
+        return raw_bytes.decode("latin-1")
+    if raw.startswith("(") and raw.endswith(")"):
+        return raw[1:-1]
+    return raw
+
+
 def verify_xfa_saved(saved_path: str, expected: dict[str, str]) -> None:
-    """Re-open saved XFA PDF with pymupdf and verify expected field values in datasets."""
+    """Re-open saved XFA PDF with pymupdf and verify expected field values.
+
+    Checks both the XFA datasets XML stream AND AcroForm widget /V entries,
+    because non-XFA viewers (mupdf, evince, okular) read from widget /V values.
+    """
     doc = pymupdf.open(saved_path)
     try:
         cat = doc.pdf_catalog()
@@ -95,14 +129,14 @@ def verify_xfa_saved(saved_path: str, expected: dict[str, str]) -> None:
 
         datasets_root = ET.fromstring(doc.xref_stream(datasets_xref))
 
-        saved: dict[str, str] = {}
+        xml_saved: dict[str, str] = {}
 
         def walk(node: ET.Element) -> None:
             children = list(node)
             tag = node.tag.split("}")[-1] if "}" in node.tag else node.tag
             if not children:
                 if node.text and node.text.strip():
-                    saved[tag] = node.text.strip()
+                    xml_saved[tag] = node.text.strip()
             else:
                 for child in children:
                     walk(child)
@@ -110,8 +144,42 @@ def verify_xfa_saved(saved_path: str, expected: dict[str, str]) -> None:
         walk(datasets_root)
 
         for name, value in expected.items():
-            assert saved.get(name) == value, (
-                f"XFA field {name!r}: expected {value!r}, got {saved.get(name)!r}"
+            assert xml_saved.get(name) == value, (
+                f"XFA datasets XML field {name!r}: expected {value!r}, got {xml_saved.get(name)!r}"
+            )
+
+        # Also verify AcroForm widget /V values (used by non-XFA viewers)
+        widget_values: dict[str, str] = {}
+        seen: set[int] = set()
+        for page_num in range(doc.page_count):
+            page = doc[page_num]
+            annots_ref = doc.xref_get_key(page.xref, "Annots")
+            if annots_ref[0] == "null":
+                continue
+            if annots_ref[0] == "array":
+                raw_arr = annots_ref[1]
+            elif annots_ref[0] == "xref":
+                arr_xref = int(annots_ref[1].split()[0])
+                raw_arr = doc.xref_object(arr_xref)
+            else:
+                continue
+            for axref in (int(x) for x in re.findall(r"(\d+) 0 R", raw_arr)):
+                if axref in seen:
+                    continue
+                seen.add(axref)
+                raw_obj = doc.xref_object(axref)
+                if "/Widget" not in raw_obj:
+                    continue
+                t_match = re.search(r"/T\s*(<[^>]+>|\([^)]*\))", raw_obj)
+                v_match = re.search(r"/V\s*(<[^>]+>|\([^)]*\))", raw_obj)
+                if not t_match or not v_match:
+                    continue
+                short = re.sub(r"\[\d+\]$", "", _decode_pdf_string(t_match.group(1)))
+                widget_values[short] = _decode_pdf_string(v_match.group(1))
+
+        for name, value in expected.items():
+            assert widget_values.get(name) == value, (
+                f"XFA widget /V {name!r}: expected {value!r}, got {widget_values.get(name)!r}"
             )
     finally:
         doc.close()

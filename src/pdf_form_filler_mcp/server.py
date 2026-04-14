@@ -48,7 +48,8 @@ def fill_field(handle: str, field_name: str, value: str) -> str:
     """Fill a single form field by name.
 
     Works for both AcroForm and XFA forms.
-    For checkboxes use 'Yes' / 'Off'; for radio buttons use the option value.
+    For checkboxes and radio buttons pass 'True' to check or 'False' to uncheck.
+    For other fields pass the desired text or option value.
     Returns 'ok' on success.
     """
     core.fill_field(handle, field_name, value)

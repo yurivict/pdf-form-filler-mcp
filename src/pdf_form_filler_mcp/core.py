@@ -70,15 +70,28 @@ def _pypdf_field_type(field: pypdf.generic.Field) -> str:
     return "unknown"
 
 
+def _checkbox_value_to_bool(v: Any) -> str:
+    """Return 'True' or 'False' for a checkbox/radio PDF field value."""
+    if v is None:
+        return "False"
+    sv = str(v).lstrip("/")
+    return "False" if sv.lower() in ("off", "false", "0", "") else "True"
+
+
 def _acroform_fields(reader: pypdf.PdfReader, filled_values: dict[str, str]) -> list[dict]:
     raw = reader.get_fields() or {}
     result = []
     for name, field in raw.items():
+        ftype = _pypdf_field_type(field)
+        if ftype in ("checkbox", "radiobutton"):
+            # Represent boolean fields as "True"/"False" strings
+            value = filled_values.get(name, _checkbox_value_to_bool(field.value))
+        else:
+            value = filled_values.get(name, str(field.value or ""))
         descriptor: dict[str, Any] = {
             "name": name,
-            # Show filled value if we have written it, else the original
-            "value": filled_values.get(name, str(field.value or "")),
-            "type": _pypdf_field_type(field),
+            "value": value,
+            "type": ftype,
         }
         choices = getattr(field, "choices", None) or []
         if choices:
@@ -87,20 +100,48 @@ def _acroform_fields(reader: pypdf.PdfReader, filled_values: dict[str, str]) -> 
     return result
 
 
-def _acroform_fill(
+def _get_checkbox_on_state(reader: pypdf.PdfReader, field_name: str) -> str:
+    """Find the 'on' export-value name for a checkbox/radio widget (e.g. 'On', 'Yes')."""
+    for page in reader.pages:
+        if "/Annots" not in page:
+            continue
+        for ref in page["/Annots"]:
+            annot = ref.get_object()
+            t = annot.get("/T")
+            if t and str(t) == field_name:
+                ap = annot.get("/AP")
+                if ap:
+                    ap_obj = ap.get_object()
+                    n = ap_obj.get("/N")
+                    if n:
+                        n_obj = n.get_object()
+                        for key in n_obj:
+                            state = str(key).lstrip("/")
+                            if state.lower() != "off":
+                                return state
+    return "Yes"  # PDF standard fallback
+
+
+def _acroform_fill_checkbox(
     writer: pypdf.PdfWriter,
     reader: pypdf.PdfReader,
     field_name: str,
-    value: str,
+    checked: bool,
 ) -> None:
-    fields = reader.get_fields() or {}
-    if field_name not in fields:
-        raise ValueError(f"Field not found: {field_name!r}")
-
+    """Check or uncheck a checkbox/radio, correctly setting both /V and /AS."""
+    state = _get_checkbox_on_state(reader, field_name) if checked else "Off"
+    pdf_name = pypdf.generic.NameObject(f"/{state}")
     for page in writer.pages:
-        writer.update_page_form_field_values(
-            page, {field_name: value}, auto_regenerate=False
-        )
+        if "/Annots" not in page:
+            continue
+        for ref in page["/Annots"]:
+            annot = ref.get_object()
+            t = annot.get("/T")
+            if t and str(t) == field_name:
+                annot.update({
+                    pypdf.generic.NameObject("/V"): pdf_name,
+                    pypdf.generic.NameObject("/AS"): pdf_name,
+                })
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +418,23 @@ def fill_field(handle: str, field_name: str, value: str) -> None:
     form_type = state["form_type"]
 
     if form_type == "AcroForm":
-        _acroform_fill(state["writer"], state["reader"], field_name, value)
+        reader = state["reader"]
+        writer = state["writer"]
+        fields = reader.get_fields() or {}
+        if field_name not in fields:
+            raise ValueError(f"Field not found: {field_name!r}")
+        ftype = _pypdf_field_type(fields[field_name])
+        if ftype in ("checkbox", "radiobutton"):
+            if value.lower() not in ("true", "false"):
+                raise ValueError(
+                    f"Field {field_name!r} is a {ftype}; value must be 'True' or 'False', got {value!r}"
+                )
+            _acroform_fill_checkbox(writer, reader, field_name, value.lower() == "true")
+        else:
+            for page in writer.pages:
+                writer.update_page_form_field_values(
+                    page, {field_name: value}, auto_regenerate=False
+                )
         state["filled_values"][field_name] = value
         return
 

@@ -503,7 +503,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=1.0.0" },
-    { name = "pymupdf", path = "/usr/ports/print/py-PyMuPDF/work-py311/pymupdf-1.27.2.2/dist/pymupdf-1.27.2.2-cp311-abi3-freebsd_15_0_stable_amd64.whl" },
+    { name = "pymupdf", path = "/tmp/pymupdf_local_wheel/pymupdf-1.27.2.2-cp311-abi3-freebsd_15_0_stable_amd64.whl" },
     { name = "pypdf", specifier = ">=3.0.0" },
 ]
 
@@ -707,9 +707,9 @@ crypto = [
 [[package]]
 name = "pymupdf"
 version = "1.27.2.2"
-source = { path = "/usr/ports/print/py-PyMuPDF/work-py311/pymupdf-1.27.2.2/dist/pymupdf-1.27.2.2-cp311-abi3-freebsd_15_0_stable_amd64.whl" }
+source = { path = "/tmp/pymupdf_local_wheel/pymupdf-1.27.2.2-cp311-abi3-freebsd_15_0_stable_amd64.whl" }
 wheels = [
-    { filename = "pymupdf-1.27.2.2-cp311-abi3-freebsd_15_0_stable_amd64.whl", hash = "sha256:21548ce844f82bb20e917a2d72c921aa1c41bb8d6b207a1bf9fbf32b20467f4f" },
+    { filename = "pymupdf-1.27.2.2-cp311-abi3-freebsd_15_0_stable_amd64.whl", hash = "sha256:b2bebb2a0e2e28bd9d2845a90f2d9469562ea3b1ed70737cc939e1a2be164aa6" },
 ]
 
 [[package]]
