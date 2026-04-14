@@ -112,8 +112,15 @@ def _decode_pdf_string(raw: str) -> str:
 def verify_xfa_saved(saved_path: str, expected: dict[str, str]) -> None:
     """Re-open saved XFA PDF with pymupdf and verify expected field values.
 
-    Checks both the XFA datasets XML stream AND AcroForm widget /V entries,
-    because non-XFA viewers (mupdf, evince, okular) read from widget /V values.
+    Checks both the XFA datasets XML stream AND AcroForm widget annotations,
+    because non-XFA viewers (mupdf, evince, okular) read from widget values.
+
+    For text widgets: verifies /V string value.
+    For button widgets (checkboxes/radio): verifies /AS appearance state.
+      - expected value is a specific on-state string like "1", "On", "Yes":
+          asserts that at least one widget for that field has /AS == on-state.
+      - expected value is "True": asserts at least one widget /AS is not "Off".
+      - expected value is "False" or "0": asserts all widgets /AS are "Off".
     """
     doc = pymupdf.open(saved_path)
     try:
@@ -148,8 +155,9 @@ def verify_xfa_saved(saved_path: str, expected: dict[str, str]) -> None:
                 f"XFA datasets XML field {name!r}: expected {value!r}, got {xml_saved.get(name)!r}"
             )
 
-        # Also verify AcroForm widget /V values (used by non-XFA viewers)
-        widget_values: dict[str, str] = {}
+        # Collect widget annotations: text fields → /V string; Btn fields → set of /AS states
+        widget_text: dict[str, str] = {}
+        widget_btn_as: dict[str, set[str]] = {}
         seen: set[int] = set()
         for page_num in range(doc.page_count):
             page = doc[page_num]
@@ -171,16 +179,43 @@ def verify_xfa_saved(saved_path: str, expected: dict[str, str]) -> None:
                 if "/Widget" not in raw_obj:
                     continue
                 t_match = re.search(r"/T\s*(<[^>]+>|\([^)]*\))", raw_obj)
-                v_match = re.search(r"/V\s*(<[^>]+>|\([^)]*\))", raw_obj)
-                if not t_match or not v_match:
+                if not t_match:
                     continue
                 short = re.sub(r"\[\d+\]$", "", _decode_pdf_string(t_match.group(1)))
-                widget_values[short] = _decode_pdf_string(v_match.group(1))
+                ft_match = re.search(r"/FT\s*/(\w+)", raw_obj)
+                ft = ft_match.group(1) if ft_match else "Tx"
+                if ft == "Btn":
+                    as_match = re.search(r"/AS\s*/(\w+)", raw_obj)
+                    as_val = as_match.group(1) if as_match else "Off"
+                    widget_btn_as.setdefault(short, set()).add(as_val)
+                else:
+                    v_match = re.search(r"/V\s*(<[^>]+>|\([^)]*\))", raw_obj)
+                    if v_match:
+                        widget_text[short] = _decode_pdf_string(v_match.group(1))
 
         for name, value in expected.items():
-            assert widget_values.get(name) == value, (
-                f"XFA widget /V {name!r}: expected {value!r}, got {widget_values.get(name)!r}"
-            )
+            if name in widget_btn_as:
+                as_vals = widget_btn_as[name]
+                if value.lower() == "true":
+                    assert any(s.lower() != "off" for s in as_vals), (
+                        f"XFA Btn widget {name!r}: expected checked, but all /AS are Off"
+                    )
+                elif value.lower() in ("false", "0"):
+                    assert all(s.lower() == "off" for s in as_vals), (
+                        f"XFA Btn widget {name!r}: expected unchecked, got /AS states {as_vals}"
+                    )
+                else:
+                    assert value in as_vals, (
+                        f"XFA Btn widget {name!r}: expected /AS /{value}, got {as_vals}"
+                    )
+            elif name in widget_text:
+                assert widget_text[name] == value, (
+                    f"XFA widget /V {name!r}: expected {value!r}, got {widget_text.get(name)!r}"
+                )
+            else:
+                assert False, (
+                    f"XFA widget {name!r}: no widget annotation found in saved PDF"
+                )
     finally:
         doc.close()
 

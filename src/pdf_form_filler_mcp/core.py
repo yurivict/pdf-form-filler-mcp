@@ -152,6 +152,53 @@ def _local(tag: str) -> str:
     return tag.split("}")[-1] if "}" in tag else tag
 
 
+def _xfa_field_on_states(tmpl_root: ET.Element) -> dict[str, str]:
+    """Return field_name -> XFA on-state value for checkButton/radioButton fields.
+
+    For a simple binary checkbox the XFA template's <xfa:items> holds two values:
+    the first is "on" (e.g. "1"), the second is "off" (e.g. "0").  We return the
+    first (on) value so callers can translate "True" → on_state at fill time.
+
+    Only the first occurrence of each field name is recorded (radio groups have
+    multiple template entries with the same name).
+    """
+    on_states: dict[str, str] = {}
+    for field in tmpl_root.iter(f"{{{_XFA_TNS}}}field"):
+        name = field.attrib.get("name", "")
+        if not name or name in on_states:
+            continue
+        ui_el = field.find(f"{{{_XFA_TNS}}}ui")
+        if ui_el is None:
+            continue
+        children = list(ui_el)
+        if not children:
+            continue
+        ui_type = _local(children[0].tag)
+        if ui_type not in ("checkButton", "radioButton"):
+            continue
+        for items_el in field.findall(f".//{{{_XFA_TNS}}}items"):
+            item_children = list(items_el)
+            if item_children:
+                on_states[name] = (item_children[0].text or "1").strip()
+                break
+    return on_states
+
+
+def _btn_on_state_from_raw(raw_obj: str) -> str | None:
+    """Return the non-Off appearance-state key from /AP/N dict in a raw widget object.
+
+    Returns e.g. "1", "On", "Yes"; or None if not found.
+    """
+    n_m = re.search(r"/AP\b.*?/N\s*<<(.*?)>>", raw_obj, re.DOTALL)
+    if not n_m:
+        return None
+    n_section = n_m.group(1)
+    for key in re.findall(r"/(\w+)\s+\d+ 0 R", n_section):
+        if key.lower() != "off":
+            return key
+    return None
+
+
 def _xfa_field_paths(tmpl_root: ET.Element) -> dict[str, list[str]]:
     """Return field_name -> list of ancestor subform names (data path)."""
     paths: dict[str, list[str]] = {}
@@ -288,9 +335,12 @@ def _decode_pdf_string(raw: str) -> str:
 
 
 def _set_xfa_widget_values(doc: pymupdf.Document, filled_values: dict[str, str]) -> None:
-    """Set /V on AcroForm widget annotations so non-XFA viewers display filled values.
+    """Set /V (and /AS for buttons) on AcroForm widget annotations so non-XFA
+    viewers display filled values.  Also sets NeedAppearances=true.
 
-    Also sets NeedAppearances=true so viewers regenerate appearance streams from /V.
+    For text widgets: /V is set as a PDF string literal.
+    For button widgets (checkboxes/radio): /V and /AS are set as PDF names
+    (/on_state or /Off), matching the widget's own AP/N appearance state.
     """
     cat = doc.pdf_catalog()
     acroform_ref = doc.xref_get_key(cat, "AcroForm")
@@ -327,8 +377,23 @@ def _set_xfa_widget_values(doc: pymupdf.Document, filled_values: dict[str, str])
             if short_name not in filled_values:
                 continue
             value = filled_values[short_name]
-            escaped = value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-            doc.xref_set_key(axref, "V", f"({escaped})")
+
+            ft_match = re.search(r"/FT\s*/(\w+)", raw_obj)
+            ft = ft_match.group(1) if ft_match else "Tx"
+
+            if ft == "Btn":
+                # For button widgets, /V and /AS must be PDF names, not strings.
+                # Each radio button widget has its own on-state in AP/N.
+                # Select this widget only if the field value matches its on-state.
+                widget_on_state = _btn_on_state_from_raw(raw_obj)
+                if widget_on_state is None:
+                    continue
+                state_to_set = widget_on_state if value == widget_on_state else "Off"
+                doc.xref_set_key(axref, "V", f"/{state_to_set}")
+                doc.xref_set_key(axref, "AS", f"/{state_to_set}")
+            else:
+                escaped = value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+                doc.xref_set_key(axref, "V", f"({escaped})")
 
 
 def _serialize_datasets(root: ET.Element) -> bytes:
@@ -363,9 +428,11 @@ def open_pdf(path: str) -> str:
             tmpl_root = ET.fromstring(doc.xref_stream(tmpl_xref))
             state["xfa_tmpl_root"] = tmpl_root
             state["xfa_field_paths"] = _xfa_field_paths(tmpl_root)
+            state["xfa_field_on_states"] = _xfa_field_on_states(tmpl_root)
         else:
             state["xfa_tmpl_root"] = None
             state["xfa_field_paths"] = {}
+            state["xfa_field_on_states"] = {}
     else:
         # AcroForm or none: use pypdf; close pymupdf
         doc.close()
@@ -443,6 +510,13 @@ def fill_field(handle: str, field_name: str, value: str) -> None:
         datasets_xref = state["xfa_streams"].get("datasets")
         if datasets_xref is None:
             raise ValueError("XFA form has no datasets stream")
+        # Resolve True/False for checkButton/radioButton fields
+        on_states = state.get("xfa_field_on_states", {})
+        if field_name in on_states:
+            if value.lower() == "true":
+                value = on_states[field_name]
+            elif value.lower() == "false":
+                value = "0"
         datasets_root = ET.fromstring(doc.xref_stream(datasets_xref))
         ancestor_path = state["xfa_field_paths"].get(field_name, [])
         _xfa_set_field(datasets_root, field_name, value, ancestor_path)
